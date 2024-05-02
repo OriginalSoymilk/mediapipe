@@ -4,6 +4,7 @@ import 'package:google_ml_kit/google_ml_kit.dart';
 import 'dart:typed_data';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
+import 'package:flutter_tts/flutter_tts.dart';
 
 void main() => runApp(const MyApp());
 
@@ -46,7 +47,14 @@ class CameraScreenState extends State<CameraScreen> {
   double _fpsAverage = 0.0;
   int _fpsCounter = 0;
   DateTime? _lastFrameTime;
-
+  int frameCounter = 0;
+  int correctCount = 0;
+  bool isPassed = false;
+  final int framesToSendHttpRequest = 5;
+  // 定义模型路径列表
+  final List<String> modelPaths = ['/predict/init', '/predict/warrior'];
+  // 用于保存当前选择的模型路径
+  String selectedModelPath = '/predict/init'; // 默认选择第一个模型
   @override
   void initState() {
     super.initState();
@@ -67,7 +75,7 @@ class CameraScreenState extends State<CameraScreen> {
             (camera) => camera.lensDirection == CameraLensDirection.back);
 
     _cameraController =
-        CameraController(selectedCamera, ResolutionPreset.medium);
+        CameraController(selectedCamera, ResolutionPreset.high);
     await _cameraController.initialize();
     if (mounted) {
       setState(() {});
@@ -87,7 +95,6 @@ class CameraScreenState extends State<CameraScreen> {
     });
   }
 
-  int num3 = 1;
   Future<void> _detectPose(CameraImage image, bool isFrontCamera) async {
     final InputImageRotation rotation = isFrontCamera
         ? InputImageRotation.rotation270deg // 前置摄像头
@@ -112,27 +119,35 @@ class CameraScreenState extends State<CameraScreen> {
       final List<Map<String, dynamic>> jsonPoses = detectedPoses.map((pose) {
         final Map<String, dynamic> poseMap = {};
         for (var landmark in pose.landmarks.values) {
-          poseMap[landmark.type.toString()] = {
-            'x': landmark.x,
-            'y': landmark.y,
-            'z': landmark.z,
-            'v': landmark.likelihood
+          final Map<String, dynamic> landmarkMap = {
+            "x": landmark.x.toStringAsFixed(2),
+            "y": landmark.y.toStringAsFixed(2),
+            "z": 0.0,
+            "v": landmark.likelihood.toStringAsFixed(2)
           };
+            poseMap[landmark.type.toString()] = landmarkMap;
         }
         return poseMap;
       }).toList();
+
       print(jsonPoses);
 
-      setState(() {
-        print("num3: $num3");
 
-        num3++;
-      });
+      //setState(() {
+        //print("num3: $num3");
+
+        //num3++;
+      //});
       setState(() {
         poses = detectedPoses;
       });
       // 发送 HTTP 请求到服务器
-      _sendHttpRequest(jsonPoses, num3);
+      frameCounter++;
+      if (frameCounter == framesToSendHttpRequest) {
+        // 发送 HTTP 请求到服务器
+        _sendHttpRequest(jsonPoses);
+        frameCounter = 0; // 重置帧计数器
+      }
     } catch (e) {
       print("Error detecting pose: $e");
     } finally {
@@ -141,24 +156,32 @@ class CameraScreenState extends State<CameraScreen> {
   }
 
   String result = '';
-  Future<void> _sendHttpRequest(
-      List<Map<String, dynamic>> jsonPoses, int num2) async {
+  String prob = '';
+  Future<void> _sendHttpRequest(List<Map<String, dynamic>> jsonPoses) async {
     try {
-      int num1 = 1;
-
       final response = await http.post(
-        Uri.parse(
-            'https://mp-hdkf.onrender.com'), // Replace with your render server endpoint
-        body: jsonEncode({
-          'num1': num1,
-          'num2': num2,
-        }),
+        Uri.parse('https://mp-hdkf.onrender.com$selectedModelPath'),
+        body: jsonEncode({'jsonPoses': jsonPoses}),
         headers: {'Content-Type': 'application/json'},
       );
-      // 处理服务器响应
+
       setState(() {
-        result = jsonDecode(response.body)['result'].toString();
+        Map<String, dynamic> responseData = jsonDecode(response.body);
+        result = responseData['body_language_class'].toString();
+        prob = responseData['body_language_prob'].toString();
         print(result);
+        print(prob);
+
+        if (result == 'correct') {
+          correctCount++;
+          if (correctCount >= 3) {
+            isPassed = true;
+            _speak('通過');
+          }
+        } else {
+          correctCount = 0;
+          isPassed = false;
+        }
       });
     } catch (e) {
       print("Error sending HTTP request: $e");
@@ -172,7 +195,10 @@ class CameraScreenState extends State<CameraScreen> {
     }
     return Uint8List.fromList(allBytes);
   }
-
+  Future<void> _speak(String text) async {
+    FlutterTts flutterTts = FlutterTts();
+    await flutterTts.speak(text);
+  }
   String _getFps() {
     DateTime currentTime = DateTime.now();
     double currentFps = _lastFrameTime != null
@@ -240,8 +266,27 @@ class CameraScreenState extends State<CameraScreen> {
       ),
       floatingActionButtonLocation: FloatingActionButtonLocation.startDocked,
       persistentFooterButtons: [
-        Text(result), // 使用 result 来显示结果
+        DropdownButton<String>(
+          value: selectedModelPath,
+          onChanged: (String? newValue) {
+            if (newValue != null) {
+              setState(() {
+                selectedModelPath = newValue;
+              });
+            }
+          },
+          items: modelPaths.map<DropdownMenuItem<String>>((String value) {
+            return DropdownMenuItem<String>(
+              value: value,
+              child: Text(value),
+            );
+          }).toList(),
+        ),
+        // 显示结果和通过/未通过文本
+        Text('$result $prob'),
+        Text(isPassed ? '通過' : '未通過'),
       ],
+
     );
   }
 }
